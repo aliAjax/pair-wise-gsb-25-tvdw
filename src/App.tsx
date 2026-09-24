@@ -1,158 +1,187 @@
+import { useMemo, useState } from "react";
 import "./styles.css";
+import ScreeningForm from "./components/ScreeningForm";
+import RecordTable, { toAmendInput } from "./components/RecordTable";
+import ReferralList from "./components/ReferralList";
+import AuditView from "./components/AuditView";
+import SettingsView from "./components/SettingsView";
+import type { EvaluatedRecord, ScreeningRecord } from "./screening/types";
+import type { Thresholds } from "./screening/thresholds";
+import { thresholdText } from "./screening/thresholds";
+import { evaluatedList, referralList, auditTrail } from "./screening/ledger";
+import { recordsToCsv, downloadCsv } from "./screening/csv";
+import { seedDemoData } from "./screening/seed";
+import { loadOperator, loadThresholds, saveOperator, saveThresholds } from "./screening/settings";
 
-const project = {
-  "id": "hxwl-11",
-  "port": 5111,
-  "title": "眼科验光记录",
-  "subtitle": "视力、屈光参数与复查处方对比",
-  "stack": "React + Vite + TypeScript + CSS",
-  "theme": [
-    "#2563eb",
-    "#059669",
-    "#dc2626"
-  ],
-  "domain": "眼视光",
-  "users": [
-    "验光师",
-    "门店顾问",
-    "复查医生"
-  ],
-  "metrics": [
-    "近视进展",
-    "散光变化",
-    "复查提醒",
-    "处方数量"
-  ],
-  "filters": [
-    "儿童",
-    "成人",
-    "渐进片",
-    "角膜塑形镜"
-  ],
-  "fields": [
-    "裸眼视力",
-    "矫正视力",
-    "球镜",
-    "柱镜",
-    "轴位",
-    "瞳距",
-    "角膜曲率"
-  ],
-  "records": [
-    [
-      "Patient-032",
-      "儿童近视",
-      "复查",
-      "右眼-2.75DS，轴位180"
-    ],
-    [
-      "Patient-081",
-      "渐进片",
-      "初配",
-      "ADD +1.50，瞳高待确认"
-    ],
-    [
-      "Patient-144",
-      "散光",
-      "复查",
-      "柱镜变化0.50D"
-    ]
-  ]
-};
+type Tab = "entry" | "referral" | "ledger" | "audit" | "settings";
 
-const statusColors = ["status-ok", "status-watch", "status-danger"];
-
-function MetricCard({ label, value, index }: { label: string; value: string; index: number }) {
-  return (
-    <article className="metric-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <i className={statusColors[index % statusColors.length]} />
-    </article>
-  );
+interface AmendTarget {
+  record: ScreeningRecord;
+  next: ReturnType<typeof toAmendInput>;
 }
 
+const TABS: { key: Tab; label: string }[] = [
+  { key: "entry", label: "筛查录入" },
+  { key: "referral", label: "待转诊名单" },
+  { key: "ledger", label: "筛查台账" },
+  { key: "audit", label: "操作留档" },
+  { key: "settings", label: "阈值与数据" },
+];
+
 function App() {
-  const values = project.metrics.map((metric: string, index: number) => {
-    const base = [84, 12, 31, 7][index % 4];
-    return String(base + index * 3);
-  });
+  const [tab, setTab] = useState<Tab>("entry");
+  const [operator, setOperator] = useState(loadOperator());
+  const [thresholds, setThresholds] = useState<Thresholds>(loadThresholds());
+  const [version, setVersion] = useState(0);
+  const [amendTarget, setAmendTarget] = useState<AmendTarget | null>(null);
+  const [formKey, setFormKey] = useState(0);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const all: EvaluatedRecord[] = useMemo(
+    () => evaluatedList(thresholds),
+    // version 变化后重新读取 localStorage
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [thresholds, version],
+  );
+  const pending = useMemo(
+    () => referralList(thresholds),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [thresholds, version],
+  );
+  const audit = useMemo(
+    () => auditTrail(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [version],
+  );
+
+  const studentCount = new Set(all.map((r) => r.studentId)).size;
+
+  const refresh = () => setVersion((v) => v + 1);
+
+  const startAmend = (record: ScreeningRecord) => {
+    setAmendTarget({ record, next: toAmendInput(record) });
+    setFormKey((k) => k + 1);
+    setTab("entry");
+  };
+
+  const handleSeed = () => {
+    const r = seedDemoData();
+    if (r.ok) {
+      setNotice(`已载入 ${r.added} 条演示数据`);
+      refresh();
+    } else setNotice(r.reason);
+  };
+
+  const handleClear = () => {
+    if (!window.confirm("将清空全部筛查记录与操作留档（保留阈值设置）。确定继续？")) return;
+    localStorage.removeItem("vision-ledger:records:v1");
+    localStorage.removeItem("vision-ledger:audit:v1");
+    setAmendTarget(null);
+    setFormKey((k) => k + 1);
+    setNotice("已清空全部数据与留档");
+    refresh();
+  };
+
+  const saveT = (t: Thresholds) => {
+    saveThresholds(t);
+    setThresholds(t);
+  };
 
   return (
     <main className="app-shell">
-      <section className="hero">
+      <header className="topbar">
         <div>
-          <p className="eyebrow">{project.id} · port {project.port}</p>
-          <h1>{project.title}</h1>
-          <p className="subtitle">{project.subtitle}</p>
+          <h1>学生视力筛查台账</h1>
+          <p className="rule-line">
+            转诊规则：{thresholdText(thresholds)}（阈值可在“阈值与数据”中调整）
+          </p>
         </div>
-        <div className="stack-card">
-          <span>技术栈</span>
-          <strong>{project.stack}</strong>
+        <div className="operator-box">
+          <label className="field" style={{ margin: 0 }}>
+            操作人
+            <input
+              value={operator}
+              placeholder="验光师姓名"
+              onChange={(e) => {
+                setOperator(e.target.value);
+                saveOperator(e.target.value);
+              }}
+            />
+          </label>
         </div>
-      </section>
+      </header>
 
-      <section className="metrics-grid">
-        {project.metrics.map((metric: string, index: number) => (
-          <MetricCard key={metric} label={metric} value={values[index]} index={index} />
+      <div className="stat-grid">
+        <div className="stat-card"><span>筛查记录</span><strong>{all.length}</strong></div>
+        <div className="stat-card"><span>覆盖学生</span><strong>{studentCount}</strong></div>
+        <div className="stat-card alert"><span>待转诊</span><strong>{pending.length}</strong></div>
+        <div className="stat-card">
+          <span>待转诊占比</span>
+          <strong>{all.length ? `${Math.round((pending.length / all.length) * 100)}%` : "—"}</strong>
+        </div>
+      </div>
+
+      <nav className="tabs">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            className={tab === t.key ? "active" : ""}
+            onClick={() => setTab(t.key)}
+          >
+            {t.label}
+            {t.key === "referral" && pending.length > 0 ? `（${pending.length}）` : ""}
+          </button>
         ))}
-      </section>
+      </nav>
 
-      <section className="workspace">
-        <aside className="panel narrow">
-          <h2>角色</h2>
-          <div className="chips">
-            {project.users.map((user: string) => (
-              <span key={user}>{user}</span>
-            ))}
-          </div>
-          <h2>筛选</h2>
-          <div className="chips muted">
-            {project.filters.map((filter: string) => (
-              <button key={filter}>{filter}</button>
-            ))}
-          </div>
-        </aside>
+      {notice && (
+        <div className="flash ok" onClick={() => setNotice(null)}>{notice}（点击关闭）</div>
+      )}
 
-        <section className="panel">
-          <div className="section-heading">
-            <div>
-              <p>{project.domain}</p>
-              <h2>记录字段</h2>
-            </div>
-            <button className="primary-action">新增记录</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
+      {tab === "entry" && (
+        <ScreeningForm
+          key={formKey}
+          operator={operator}
+          amendTarget={amendTarget}
+          onConsumed={() => setAmendTarget(null)}
+          onChange={refresh}
+        />
+      )}
 
-      <section className="records panel">
-        <div className="section-heading">
-          <div>
-            <p>示例数据</p>
-            <h2>近期记录</h2>
-          </div>
-          <button>导出摘要</button>
-        </div>
-        <div className="record-list">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")} className="record-card">
-              <div className="record-index">{String(index + 1).padStart(2, "0")}</div>
+      {tab === "referral" && <ReferralList records={pending} onAmend={startAmend} />}
+
+      {tab === "ledger" && (
+        <>
+          <section className="panel">
+            <div className="section-heading">
               <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
+                <h2>数据导出</h2>
+                <p className="hint">导出的是测量数据与当前判定；修改痕迹请到“操作留档”导出。</p>
               </div>
-            </article>
-          ))}
-        </div>
-      </section>
+              <button
+                disabled={all.length === 0}
+                onClick={() =>
+                  downloadCsv(`视力筛查台账_${Date.now()}.csv`, recordsToCsv(all))
+                }
+              >
+                导出台账 CSV（全部）
+              </button>
+            </div>
+          </section>
+          <RecordTable records={all} onAmend={startAmend} />
+        </>
+      )}
+
+      {tab === "audit" && <AuditView entries={audit} />}
+
+      {tab === "settings" && (
+        <SettingsView
+          thresholds={thresholds}
+          onSave={saveT}
+          onSeedDemo={handleSeed}
+          onClearAll={handleClear}
+        />
+      )}
     </main>
   );
 }
